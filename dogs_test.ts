@@ -1,85 +1,56 @@
-import axios from 'axios';
+import { assert } from "console";
+import { prepareDir } from "./utils/utils";
+import { YandexDisk } from './modules/yandexDisk';
+import { fetchBreedList, fetchBreedRandomImageUrl } from "./utils/breeds";
+import { assertFolder } from "./asserts/assertions";
+require('dotenv').config();
 
-let allUrls: any[] = [];
-let allSubBreeds: any[] = [];
+const YANDEX_TOKEN: string = process.env.YANDEX_TOKEN || '';
+let breedList: string[] = [];
 
-class YaUploader {
-    createFolder(path: string, token: string) {
-        const urlCreate = 'https://cloud-api.yandex.net/v1/disk/resources';
-        const headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'Authorization': `OAuth ${token}`,
-        };
-        axios.put(`${urlCreate}?path=${path}`, {}, { headers }).then(() => {
-            console.log("Folder created");
-        });
+async function upload(client: YandexDisk, dir: string, breed: string): Promise<string[]> {
+    const requestedBreeds = new Set<string>();
+    const uploadPromises: Promise<string | boolean>[] = [];
+
+    console.log(`Fetching '${breed}'`);
+    const list = await fetchBreedList(breed);
+    console.log(`Fetching ${list.length} breeds`);
+
+    for (const breedItem of list) {
+        const path = breedItem === breed ? breed : `${breed}/${breedItem}`;
+        const urlToBreed = await fetchBreedRandomImageUrl(path);
+        uploadPromises.push(client.uploadPhoto(dir, urlToBreed, `${breedItem}.jpg`, true));
+        requestedBreeds.add(path);
     }
 
-    uploadPhotosToYd(token: string, path: string, urlFile: string, name: string) {
-        const url = "https://cloud-api.yandex.net/v1/disk/resources/upload";
-        const headers = {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'Authorization': `OAuth ${token}`,
-        };
-        const params = {
-            path: `/${path}/${name}`,
-            url: urlFile,
-            overwrite: "true"
-        };
-        axios.post(url, {}, { headers, params }).then(() => {
-            console.log(`Uploaded: ${name}`);
-        });
-    }
-}
-
-function fetchSubBreeds(breed: string) {
-    axios.get(`https://dog.ceo/api/breed/${breed}/list`).then(res => {
-        allSubBreeds = res.data.message || [];
-        fetchUrls(breed);
-    });
-}
-
-function fetchUrls(breed: string) {
-    if (allSubBreeds.length > 0) {
-        allSubBreeds.forEach(subBreed => {
-            axios.get(`https://dog.ceo/api/breed/${breed}/${subBreed}/images/random`).then(res => {
-                allUrls.push(res.data.message);
-                axios.get(`https://dog.ceo/api/breed/${breed}/${subBreed}/images/random`).then(res => {
-                    allUrls.push(res.data.message);
-                });
-            });
-        });
-    } else {
-        axios.get(`https://dog.ceo/api/breed/${breed}/images/random`).then(res => {
-            allUrls.push(res.data.message);
-            axios.get(`https://dog.ceo/api/breed/${breed}/images/random`).then(res => {
-                allUrls.push(res.data.message);
-            });
-        });
+    try {
+        const results = await Promise.all(uploadPromises);
+        breedList.push(...results.filter((v) => v !== false) as string[]);
+        assert(requestedBreeds.size === breedList.length, 'Requested and downloaded files count does not match');
+        return breedList;
+    } catch (error) {
+        throw error;
     }
 }
 
-function u(breed: string) {
-    const yandexClient = new YaUploader();
-    yandexClient.createFolder('test_folder', "AgAAAAAJtest_tokenxkUEdew");
-    fetchSubBreeds(breed);
-}
+async function main(breed: string) {
+    // Data
+    const yandexClient = new YandexDisk(YANDEX_TOKEN);
+    const dir = 'test_folder';
 
-function t(breed: string) {
-    u(breed);
-    axios.get('https://cloud-api.yandex.net/v1/disk/resources?path=/test_folder').then(response => {
-        const items = response.data._embedded?.items || [];
-        items.forEach(item => {
-            if (item.type === 'file') {
-                console.log(`File found: ${item.name}`);
-            }
-        });
-    });
+    // Arrange
+    await prepareDir(yandexClient, dir);
+
+    // Act
+    const uploadedFiles: string[] = await upload(yandexClient, dir, breed);
+
+    // Assert
+    await assertFolder(yandexClient, dir, uploadedFiles);
 }
 
 // Random breed selection
 const breeds = ['doberman', 'bulldog', 'collie'];
+// const randomBreed = 'spaniel';
 const randomBreed = breeds[Math.floor(Math.random() * breeds.length)];
-t(randomBreed);
+
+main(randomBreed);
